@@ -4,12 +4,18 @@
 #include <Wire.h>
 #include <MD_MAX72xx.h>
 
+// Buzzer configuration
+#define BUZZER_PIN 2  // D2 for buzzer
+#define BUZZER_CONTINUOUS_THRESHOLD 80  // Distance in mm for continuous sound (8cm)
+#define BUZZER_MAX_RANGE 350  // Distance in mm for beeping pattern upper limit (35cm)
+
 // LED Matrix configuration (Arduino Nano SPI pins)
 #define HARDWARE_TYPE MD_MAX72XX::FC16_HW
 #define MAX_DEVICES 4
 #define CLK_PIN   13  // SPI Clock (SCK)
 #define DATA_PIN  11  // SPI MOSI
 #define CS_PIN    10  // SPI SS
+#define MATRIX_ACTIVATION_THRESHOLD 500  // Distance in mm to activate LED matrix (50cm)
 
 // Distance sensor configuration
 const uint32_t DISTANCE_READ_INTERVAL = 50;   // Read every 50ms (continuous mode is fast)
@@ -87,62 +93,114 @@ void updateDistanceMeasurement() {
 
 void updateMatrixDisplay() {
   static uint32_t lastUpdateTime = 0;
+  static bool matrixActive = false;
 
   if (!distanceSensorReady) return;
 
-  // Update display only if 500ms has passed
-  if (millis() - lastUpdateTime < 500) return;
+  uint16_t distanceInMm = lastDistance;
 
-  lastUpdateTime = millis();
-
-  // Format distance as decimal string with one decimal place
-  float distanceCm = lastDistance / 10.0;
-  Serial.println(distanceCm);
-  char distanceStr[8];
-  dtostrf(distanceCm, 0, 1, distanceStr);  // width=0 (no padding), decimal_places=1
-  Serial.println(distanceStr);
-
-  // Calculate text properties
-  uint8_t textLen = strlen(distanceStr);
-  Serial.print("Textlen: ");
-  Serial.println(textLen);
-  const uint8_t CHAR_SPACING = 1;
-
-  // Reverse the string for correct display order
-  for (uint8_t i = 0; i < textLen / 2; i++) {
-    char temp = distanceStr[i];
-    distanceStr[i] = distanceStr[textLen - 1 - i];
-    distanceStr[textLen - 1 - i] = temp;
-  }
-
-  // Calculate actual text width
-  uint8_t cBuf[8];
-  uint16_t actualWidth = 0;
-  for (uint8_t i = 0; i < textLen; i++) {
-    uint8_t charWidth = mx.getChar(distanceStr[i], sizeof(cBuf) / sizeof(cBuf[0]), cBuf);
-    actualWidth += charWidth;
-    if (i < textLen - 1) actualWidth += CHAR_SPACING;
-  }
-  int16_t startCol = (32 - actualWidth) / 2;
-
-  // Clear the display
-  mx.clear();
-
-  // Draw each character at calculated position
-  uint8_t col = startCol;
-
-  for (uint8_t i = 0; i < textLen; i++) {
-    uint8_t charWidth = mx.getChar(distanceStr[i], sizeof(cBuf) / sizeof(cBuf[0]), cBuf);
-
-    // Write character columns in reverse order                                                                                
-    for (int8_t j = charWidth - 1; j >= 0; j--) {
-      if (col >= 0 && col < 32) {
-        mx.setColumn(col, cBuf[j]);
-      }
-      col++;
+  // Check if matrix should be active based on distance threshold
+  if (distanceInMm < MATRIX_ACTIVATION_THRESHOLD) {
+    // Distance is close, matrix should be on
+    if (!matrixActive) {
+      mx.clear();  // Turn on and clear the display
+      matrixActive = true;
     }
-    // Add spacing between characters
-    col += CHAR_SPACING;
+
+    // Update display only if 500ms has passed
+    if (millis() - lastUpdateTime < 500) return;
+    lastUpdateTime = millis();
+
+    // Format distance as decimal string with one decimal place
+    float distanceCm = distanceInMm / 10.0;
+    char distanceStr[8];
+    dtostrf(distanceCm, 0, 1, distanceStr);  // width=0 (no padding), decimal_places=1
+
+    // Calculate text properties
+    uint8_t textLen = strlen(distanceStr);
+    const uint8_t CHAR_SPACING = 1;
+
+    // Reverse the string for correct display order
+    for (uint8_t i = 0; i < textLen / 2; i++) {
+      char temp = distanceStr[i];
+      distanceStr[i] = distanceStr[textLen - 1 - i];
+      distanceStr[textLen - 1 - i] = temp;
+    }
+
+    // Calculate actual text width
+    uint8_t cBuf[8];
+    uint16_t actualWidth = 0;
+    for (uint8_t i = 0; i < textLen; i++) {
+      uint8_t charWidth = mx.getChar(distanceStr[i], sizeof(cBuf) / sizeof(cBuf[0]), cBuf);
+      actualWidth += charWidth;
+      if (i < textLen - 1) actualWidth += CHAR_SPACING;
+    }
+    int16_t startCol = (32 - actualWidth) / 2;
+
+    // Clear the display
+    mx.clear();
+
+    // Draw each character at calculated position
+    uint8_t col = startCol;
+
+    for (uint8_t i = 0; i < textLen; i++) {
+      uint8_t charWidth = mx.getChar(distanceStr[i], sizeof(cBuf) / sizeof(cBuf[0]), cBuf);
+
+      // Write character columns in reverse order
+      for (int8_t j = charWidth - 1; j >= 0; j--) {
+        if (col >= 0 && col < 32) {
+          mx.setColumn(col, cBuf[j]);
+        }
+        col++;
+      }
+      // Add spacing between characters
+      col += CHAR_SPACING;
+    }
+  } else {
+    // Distance is far, keep matrix off to save power (skip display updates)
+    if (matrixActive) {
+      mx.clear();  // Clear display
+      matrixActive = false;
+    }
+  }
+}
+
+void updateBuzzerFeedback() {
+  static uint32_t lastBuzzerUpdate = 0;
+  static uint32_t beepTimer = 0;
+  static bool isBuzzing = false;
+  const uint8_t minFreq = 25;
+
+  if (!distanceSensorReady) {
+    noTone(BUZZER_PIN);
+    return;
+  }
+
+  // Update every 25ms
+  if (millis() - lastBuzzerUpdate < minFreq) return;
+  lastBuzzerUpdate = millis();
+
+  uint16_t distanceInMm = lastDistance;
+
+  if (distanceInMm < BUZZER_CONTINUOUS_THRESHOLD) {
+    // Continuous sound for very close
+    tone(BUZZER_PIN, 2000);
+  }
+  else if (distanceInMm < BUZZER_MAX_RANGE) {
+    // Beeping pattern - speed increases as distance decreases
+    // Closer = faster beeps
+    uint16_t beepInterval = map(distanceInMm, BUZZER_CONTINUOUS_THRESHOLD, BUZZER_MAX_RANGE, minFreq, 500);
+
+    if (millis() - beepTimer >= beepInterval) {
+      isBuzzing = !isBuzzing;
+      isBuzzing ? tone(BUZZER_PIN, 1200) : noTone(BUZZER_PIN);
+      beepTimer = millis();
+    }
+  }
+  else {
+    // Silent when far
+    noTone(BUZZER_PIN);
+    isBuzzing = false;
   }
 }
 
@@ -152,6 +210,10 @@ void setup(void) {
   Serial.begin(9600);  // Arduino Nano standard baud rate
   delay(500);  // Wait for serial to stabilize
   Serial.println("DistanceMeter starting...");
+
+  // Initialize buzzer pin
+  pinMode(BUZZER_PIN, OUTPUT);
+  noTone(BUZZER_PIN);  // Ensure buzzer is off
 
   // Initialize VL53L0X Time of Flight sensor (distance meter)
   initVL53L0X();
@@ -167,4 +229,5 @@ void setup(void) {
 void loop(void) {
   updateDistanceMeasurement();
   updateMatrixDisplay();
+  updateBuzzerFeedback();
 }
