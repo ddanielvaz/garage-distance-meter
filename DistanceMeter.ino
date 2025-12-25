@@ -22,6 +22,10 @@ const uint32_t DISTANCE_READ_INTERVAL = 50;   // Read every 50ms (continuous mod
 const uint8_t SAMPLE_SIZE = 5;                 // Rolling average buffer size
 const uint16_t CONTINUOUS_MODE_TIMEOUT = 1000; // Timeout for continuous mode
 
+// Idle shutdown configuration
+const uint16_t IDLE_SHUTDOWN_THRESHOLD = 20;   // Distance change in mm to trigger activity (1cm)
+const uint32_t IDLE_SHUTDOWN_TIMEOUT = 15000;  // Time in ms before shutdown (15 seconds)
+
 // applied offset in mm to correct measurements
 int8_t sensorCalibrationOffset = -53;
 
@@ -32,6 +36,11 @@ uint8_t sampleIndex = 0;                       // Current position in buffer
 uint16_t lastDistance = 0;
 bool distanceSensorReady = false;
 bool distanceSensorError = false;
+
+// Idle shutdown tracking
+uint16_t lastSignificantDistance = 0;          // Last distance with significant change
+uint32_t lastSignificantChangeTime = 0;        // Timestamp of last significant distance change
+bool isSystemIdle = false;                     // System idle state
 
 // LED Matrix display
 MD_MAX72XX mx = MD_MAX72XX(HARDWARE_TYPE, CS_PIN, MAX_DEVICES);
@@ -91,11 +100,45 @@ void updateDistanceMeasurement() {
   }
 }
 
+void updateIdleShutdown() {
+  // Check if distance has changed significantly
+  uint16_t distanceChange = abs((int)lastDistance - (int)lastSignificantDistance);
+
+  if (distanceChange >= IDLE_SHUTDOWN_THRESHOLD) {
+    // Significant movement detected, reset idle state
+    lastSignificantDistance = lastDistance;
+    lastSignificantChangeTime = millis();
+
+    // If system was idle, wake it up
+    if (isSystemIdle) {
+      isSystemIdle = false;
+      Serial.println("System resumed - movement detected");
+    }
+  } else {
+    // No significant movement, check if idle timeout has been reached
+    if (millis() - lastSignificantChangeTime >= IDLE_SHUTDOWN_TIMEOUT) {
+      if (!isSystemIdle) {
+        isSystemIdle = true;
+        Serial.println("System idle - shutting down buzzer and display");
+      }
+    }
+  }
+}
+
 void updateMatrixDisplay() {
   static uint32_t lastUpdateTime = 0;
   static bool matrixActive = false;
 
   if (!distanceSensorReady) return;
+
+  // Clear display when system is idle
+  if (isSystemIdle) {
+    if (matrixActive) {
+      mx.clear();
+      matrixActive = false;
+    }
+    return;
+  }
 
   uint16_t distanceInMm = lastDistance;
 
@@ -176,6 +219,13 @@ void updateBuzzerFeedback() {
     return;
   }
 
+  // Shut down buzzer when system is idle
+  if (isSystemIdle) {
+    noTone(BUZZER_PIN);
+    isBuzzing = false;
+    return;
+  }
+
   // Update every 25ms
   if (millis() - lastBuzzerUpdate < minFreq) return;
   lastBuzzerUpdate = millis();
@@ -217,6 +267,8 @@ void setup(void) {
 
   // Initialize VL53L0X Time of Flight sensor (distance meter)
   initVL53L0X();
+  // Initialize idle shutdown tracking
+  lastSignificantChangeTime = millis();
   // Initialize LED Matrix
   if (!mx.begin()) {
     Serial.println("LED Matrix failed to start");
@@ -228,6 +280,7 @@ void setup(void) {
 
 void loop(void) {
   updateDistanceMeasurement();
+  updateIdleShutdown();
   updateMatrixDisplay();
   updateBuzzerFeedback();
 }
